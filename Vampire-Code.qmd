@@ -1,0 +1,580 @@
+---
+title: "Text as Data Final Paper"
+author: "Maura Anish"
+date: "12/14/2024"
+format: 
+  html:
+    self-contained: true
+editor: visual
+---
+
+```{r}
+#| warning: false
+#| message: false
+library(tidyverse)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textmodels)
+library(caret)
+library(e1071)
+library(randomForest)
+```
+
+### Introduction
+
+Sentiment classification on movie reviews has been performed for over two decades. In 2002, Pang, Lee, and Vaithyanathan used Naive Bayes Classification, Maximum Entropy Classification, and Support Vector Machines to predict whether movie reviews from IMDb were more positive or negative. More recently, deep learning approaches like Convolutional Neural Networks, Long Short-Term Memory Networks, and Recurrent Neural Networks have been used to perform sentiment classification on movie reviews (Beniwal et al., 2024; G et al., 2024; Purohit et al., 2024). However, recent work has also been done on movie review sentiment classification using Naive Bayes, Support Vector Machines, and Random Forest models (Agarwal et al., 2023; Başa & Basarslan, 2023; Danyal et al., 2024). All of this previous work has used reviews from all kinds of movies.
+
+In this project, I wanted to use reviews of vampire movies only to see how well supervised learning models would perform on a smaller, purposefully chosen subset of data. Among vampire movies, there exists a wide range of approaches to the subject matter, which represents the diversity that exists among all movies, to a certain extent. For example, vampire movies that were reviewed in this data include the classic *Dracula* (1931), starring Bela Lugosi, the comedic *Abbott and Costello Meet Frankenstein* (1948), the artful *Ganja & Hess* (1973), the child-friendly *Scooby-Doo and the Reluctant Werewolf* (1988), the action-packed *Blade* (1998), and the teen romance *Twilight* (2008), just to name a few.
+
+Vampire movies have continued to stay culturally relevant because of the vast array of ways in which the figure of the vampire can be used to tell a story about humanity. As Jeffrey Weinstock writes, "the cinematic vampire is invariably an overdetermined body that condenses a constellation of culturally speciﬁc anxieties and desires into one super-saturated form" (p. 13). The fear of vampires has variously acted as a metaphor for a fear of people of other races, from other countries, of non-heterosexual sexual orientations, from other economic statuses, and other traits that aren't supernatural at all. In some movies, the vampire is the villain, but in others, they are the love interest or even the protagonist. It's unclear as to what extent these aspects of vampire movies will be expressed in the brief movie reviews used in this project, but it's important to acknowledge that analysis of such material does have the potential to provide insight into social science topics.
+
+### Research Question and Hypotheses
+
+My research question is: According to critics, what makes a good vampire movie? Which words are commonly used to describe positively-reviewed vampire movies?
+
+My first hypothesis is: Some words that are used to positively describe any movie (such as "good," "amazing," and "fantastic") will be used to describe well-received vampire movies.
+
+My second hypothesis is: Other words that may not typically describe positive reactions to movies in general (such as "bloody," "gruesome," and "disturbing") may also be used to describe well-received vampire movies.
+
+### Original Data
+
+On Kaggle (<https://www.kaggle.com/datasets/stefanoleone992/rotten-tomatoes-movies-and-critic-reviews-dataset/data>), I found a dataset consisting of over 1 million reviews of over 17,000 movies from critics on Rotten Tomatoes. The data was scraped from the Rotten Tomatoes website on October 31, 2020 and only contains information about movies released prior to 2020. Since the reviews hosted on Rotten Tomatoes are only brief excerpts (10 to 250 characters) of longer reviews hosted on individual critics' websites, each review in this dataset summarizes the main perspective of a critic on a movie.
+
+After cross-referencing the list of movies reviewed by critics in this dataset with a list of vampire movies, I narrowed down a final list of 154 vampire movie titles contained in the dataset. By only retaining the reviews of vampire movies, I narrowed down the number of reviews from over 1 million to just over 9,000.
+
+```{r}
+# read in dataset with only vampire movie reviews
+vamp_reviews <- read.csv("C://Users/maura/Documents/DACSS/758/Final/vamp_reviews.csv")
+vamp_reviews <- vamp_reviews |>
+  rename(movie_ID = rotten_tomatoes_link) |>
+  rename(review_freshness = review_type) |>
+  select(movie_ID, critic_name, top_critic, publisher_name, review_freshness, review_date, review_content) |>
+  mutate(review_date = mdy(review_date)) |>
+  arrange(review_date)
+dim(vamp_reviews)
+head(vamp_reviews)
+```
+
+The number of reviews of vampire movies was further reduced after removing reviews from critics that only contained a rating with no additional text, reviews that appeared in the dataset more than once, and reviews that weren't in English.
+
+```{r}
+# remove rows with no review
+vamp_reviews <- filter(vamp_reviews, str_length(review_content)>1)
+dim(vamp_reviews)
+```
+
+```{r}
+# remove duplicate rows
+vamp_reviews <- distinct(vamp_reviews)
+dim(vamp_reviews)
+```
+
+```{r}
+# remove reviews that aren't in english
+vamp_reviews <- vamp_reviews |>
+  filter(publisher_name != "Cinema em Cena" & 
+           publisher_name != "Cinenganos" &
+           publisher_name != "EnPrimeur.ca" &
+           publisher_name != "Movies for the Masses" &
+           publisher_name != "Moviola" & 
+           publisher_name != "Panorama" &
+           publisher_name != "Uruguay Total")
+dim(vamp_reviews)
+```
+
+The final number of reviews included in the dataset is 8,254. Besides the text of each review, each row in the dataset contains the name of the film the review is for, the name of the critic who wrote the review, whether the critic is a "Top Critic" on Rotten Tomatoes or not, the publication the critic wrote the review for, the date the critic published their review on Rotten Tomatoes, and the "Freshness" of the review.
+
+After the reviews had been cleaned, I split them into two subsets: one consisting only of "Fresh" reviews (if the critic liked the movie), and one consisting only of "Rotten" reviews (if the critic didn't like the movie). There was an almost equal number of Fresh (4,181) and Rotten (4,073) reviews.
+
+```{r}
+# create fresh and rotten datasets
+fresh_reviews <- filter(vamp_reviews, review_freshness == "Fresh")
+dim(fresh_reviews)
+rotten_reviews <- filter(vamp_reviews, review_freshness == "Rotten")
+dim(rotten_reviews)
+```
+
+```{r}
+# create fresh corpus
+fresh_reviews$review_ID <- str_c("F", seq(1:nrow(fresh_reviews)))
+fresh_corpus <- corpus(fresh_reviews, docid_field = "review_ID",
+                       text_field = "review_content")
+summary(fresh_corpus, n=5)
+```
+
+```{r}
+# create rotten corpus
+rotten_reviews$review_ID <- str_c("R", seq(1:nrow(rotten_reviews)))
+rotten_corpus <- corpus(rotten_reviews, docid_field = "review_ID",
+                       text_field = "review_content")
+summary(rotten_corpus, n=5)
+```
+
+Next, I wanted to get a sense of which words were most frequently used in both corpora.
+
+```{r}
+# tokenize; remove punctuation, numbers, and stopwords
+fresh_tokens <- tokens(fresh_corpus, 
+                       remove_punct = T, remove_numbers = T)
+
+# make document feature matrix
+fresh_dfm <- dfm(fresh_tokens) |>
+  dfm_remove(stopwords('english')) |>
+  dfm_trim(min_termfreq = 75, verbose = FALSE)
+
+# make word cloud
+set.seed(12)
+textplot_wordcloud(fresh_dfm, color="darkgreen")
+```
+
+```{r}
+# tokenize; remove punctuation, numbers, and stopwords
+rotten_tokens <- tokens(rotten_corpus, 
+                       remove_punct = T, remove_numbers = T)
+
+# make document feature matrix
+rotten_dfm <- dfm(rotten_tokens) |>
+  dfm_remove(stopwords('english')) |>
+  dfm_trim(min_termfreq = 75, verbose = FALSE)
+
+# make word cloud
+set.seed(12)
+textplot_wordcloud(rotten_dfm, color="red")
+```
+
+The word clouds for the positive and negatively reviewed vampire movies have some overlap, but they also have their differences. The Fresh word cloud has words like "good," "great," "best," "fun," "original," "love," and "entertaining," which are expected to be associated with positive reviews. The Rotten word cloud has words like "bad," "worst," "little," "never," and "enough," which are expected to be associated with negative reviews. However, the Rotten word cloud also contains the common positive words like "good," "better," "best," and "fun," which might be frequently negated in the negative reviews, but that isn't captured by the unigram analysis performed here.
+
+Both word clouds also contain some words related to specific movies, such as "Twilight," "Underworld," "Blade," and "Dracula." It's not surprising that the vampire movie franchises with multiple entries like *Twilight* (5 films), *Underworld* (5 films), and *Blade* (3 films) are discussed more than films which stand alone. The character of Dracula is featured in many different vampire movies, and even if he isn't explicitly present in them, he presents a well-known figure for critics to compare the depictions of other vampires to in their reviews. Other vampire-specific words in the clouds include "horror," "action," "blood," "dark," and "shadows."
+
+Finally, both word clouds feature words pertaining to aspects of the movies that critics discuss. These words include "story," "plot," "characters," "genre," "director," "effects," "series," and "franchise." Going forward, it could be helpful to study how these elements of the movies are discussed (such as which adjectives frequently accompany them) to distinguish positive from negative reviews. A similar tactic could also be applied to the adjectives used near common words like "film," "movie," "vampire," or "vampires."
+
+```{r}
+# make a corpus with 2 documents (1 for all fresh and 1 for all rotten reviews)
+fresh_review_text <- paste(fresh_reviews$review_content, collapse=" ")
+rotten_review_text <- paste(rotten_reviews$review_content, collapse=" ")
+fr_df <- tibble(freshness = c("Fresh", "Rotten"),
+                review_text = c(fresh_review_text, rotten_review_text))
+fr_corpus <- corpus(fr_df, docid_field = "freshness", text_field = "review_text")
+
+# tokenize; remove punctuation, numbers, and stopwords
+fr_tokens <- tokens(fr_corpus, remove_punct = T, remove_numbers = T) |>
+  tokens_select(pattern="vampire", select = "remove")
+
+# make document feature matrix
+fr_dfm <- dfm(fr_tokens) |> dfm_remove(stopwords('english')) |>
+  dfm_trim(min_termfreq = 150, verbose = FALSE)
+
+# make comparison word cloud
+set.seed(15)
+textplot_wordcloud(fr_dfm, comparison = TRUE, color = c("darkgreen", "red"))
+```
+
+The comparison word cloud makes it clear that the Fresh reviews are more likely to contain positive words like "good," "great," "best," "original," "fun," and "entertaining" than Rotten reviews are. Rotten reviews are more likely to contain negative words like "bad" and "little" along with words about largely negatively-received series such as "Twilight," and "Blade," and the word "series" in general.
+
+I was curious to see if the ways in which critics described vampires in their reviews would be indicative of their feelings about the movies. In order to do so, I created co-occurrence networks to examine the 30 most frequent words that were 5 words or fewer away from the word "vampire." (According to the word clouds, the singular "vampire" was used more frequently in both Fresh and Rotten reviews than the plural "vampires," so I chose to use "vampire" only.)
+
+```{r}
+# tokenize corpora; remove punctuation, numbers, and stopwords
+fresh_tokens <- tokens(fresh_corpus, remove_punct = T, remove_numbers = T) |>
+  tokens_select(pattern = stopwords(), select = "remove") |> tokens_tolower()
+rotten_tokens <- tokens(rotten_corpus, remove_punct = T, remove_numbers = T) |>
+  tokens_select(pattern = stopwords(), select = "remove") |> tokens_tolower()
+```
+
+```{r}
+# keep words surrounding "vampire" or "vampires" in reviews
+fresh_near_vamp <- tokens_select(fresh_tokens, pattern = "vampire",
+                                 window = 5, selection = "keep")
+rotten_near_vamp <- tokens_select(rotten_tokens, pattern = "vampire",
+                                  window = 5, selection = "keep")
+
+# create feature co-occurrence matrices
+fresh_fcm <- fcm(fresh_near_vamp, context = "window")
+rotten_fcm <- fcm(rotten_near_vamp, context = "window")
+
+# only keep 30 most frequent co-occurring words
+top_fresh_feats <- names(sort(colSums(fresh_fcm), decreasing = TRUE)[1:30]) 
+vamp_fresh_fcm <- fcm_select(fresh_fcm, pattern = c("vampire", top_fresh_feats))
+top_rot_feats <- names(sort(colSums(rotten_fcm), decreasing = TRUE)[1:30]) 
+vamp_rot_fcm <- fcm_select(rotten_fcm, pattern = c("vampire", top_rot_feats))
+```
+
+```{r}
+set.seed(12)
+textplot_network(vamp_fresh_fcm)
+```
+
+The co-occurrence network of "vampire" for Fresh reviews includes some positive words such as "original," "love," and "best." There are also some words like "Iranian," "Swedish," "Abraham," "Lincoln," "Twilight," and "Jarmusch" which are specific to certain movies.
+
+```{r}
+set.seed(12)
+textplot_network(vamp_rot_fcm)
+```
+
+The co-occurrence network of "vampire" for Rotten reviews includes some negative words like "bad" and "much," but they also feature some positive words like "good," "better," and "fun." Similarly to the co-occurrence network for the positive reviews, there are some movie-specific words such as "Abraham," "Lincoln," "Academy," and "Twilight."
+
+### Supervised Learning with Original Data
+
+With a basic understanding of some of the most common words used in positive and negative reviews of vampire movies, I proceeded to apply supervised learning techniques to the data. My goal was to see how well these algorithms could predict the sentiment of the reviews and which words in the reviews were most strongly used to signal the sentiment.
+
+```{r}
+# make one big corpus
+vamp_reviews$review_ID <- seq(1:nrow(vamp_reviews))
+vamp_corpus <- corpus(vamp_reviews, docid_field = "review_ID",
+                      text_field = "review_content")
+docvars(vamp_corpus, "review_ID") <- vamp_reviews$review_ID
+ndoc(vamp_corpus)
+```
+
+```{r}
+# set seed, then split into training and testing sets
+set.seed(12)
+N <- ndoc(vamp_corpus)
+trainIndex <- sample(1:N, .8*N)
+testIndex <- c(1:N)[-trainIndex]
+
+# create dfms without stopwords or punctuation
+dfmTrain <- corpus_subset(vamp_corpus, review_ID %in% trainIndex) |>
+  tokens(remove_punct=T) |> tokens_select(c("vampire", "vampires"), selection="remove") |>
+  dfm() |> dfm_remove(stopwords('english')) |> dfm_trim(min_docfreq = 20)
+dim(dfmTrain) # 80% of all documents
+dfmTest <- corpus_subset(vamp_corpus, review_ID %in% testIndex) |>
+  tokens(remove_punct=T) |> tokens_select(c("vampire", "vampires"), selection="remove") |>
+  dfm() |> dfm_remove(stopwords('english'))
+dim(dfmTest) # 20% of all documents
+```
+
+#### Naive Bayes Model
+
+```{r}
+# run NB model
+nb_model <- textmodel_nb(dfmTrain, docvars(dfmTrain, "review_freshness"),
+                         distribution = "Bernoulli")
+summary(nb_model)
+```
+
+```{r}
+# evaluate performance of new model on test data
+dfmTestMatched <- dfm_match(dfmTest, features = featnames(dfmTrain))
+actual <- docvars(dfmTestMatched, "review_freshness")
+predicted <- predict(nb_model, newdata = dfmTestMatched)
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+```{r}
+# compare probabilities of features
+nb_feature_probs <- as.data.frame(t(nb_model$param))
+nb_feature_probs$Difference <- nb_feature_probs$Fresh - nb_feature_probs$Rotten
+```
+
+```{r}
+# examine words that are more positive than negative
+head(arrange(nb_feature_probs, desc(Difference)))
+```
+
+```{r}
+# examine words that are more negative than positive
+head(arrange(nb_feature_probs, Difference))
+```
+
+This Naive Bayes model generated a classification accuracy of around 70%. Words like "fun" and "best" are more likely to appear in positive reviews, while words like "bad," "worst," and "mess" are more likely to appear in negative reviews. It's also interesting to note that positive reviews are more likely to refer to their objects of critique as "films," while negative reviews refer to them as "movies," which doesn't imply as high of an artistic value as the word "film" does.
+
+#### Support Vector Machines
+
+```{r}
+# run SVM model
+svm_model <- textmodel_svm(dfmTrain, docvars(dfmTrain, "review_freshness"))
+```
+
+```{r}
+# evaluate performance of model on test data
+dfmTestMatched <- dfm_match(dfmTest, features = featnames(dfmTrain))
+actual <- docvars(dfmTestMatched, "review_freshness")
+predicted <- predict(svm_model, newdata = dfmTestMatched)
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+With an accuracy around 67%, the SVM model performed slightly worse than the Naive Bayes model, but not by much.
+
+```{r}
+# examine most positive and most negative features
+svmCoefs <- as.data.frame(t(coefficients(svm_model)))
+svmCoefs <- svmCoefs |> arrange(V1)
+tail(svmCoefs, 20)
+head(svmCoefs, 20)
+```
+
+The top 20 most positive and top 20 most negative features from the SVM model make intuitive sense. Some of the most positive features include "delight," "terrific," "brilliant," "enjoyable," "succeeds," and "greatest." Some of the most negative features include "bland," "tedious," "neither," "dull," "poor," and "stupid." There are also certain words, like "Amirpour," "Jarmusch," and "Nosferatu," which are included in the top 20 positive features because of the creators or characters of specific highly-rated films and are not applicable to vampire movies as a whole.
+
+#### Random Forests
+
+```{r}
+# convert DFMs to matrices to run random forest model
+dfmTrainMatrix <- convert(dfmTrain, to = "matrix")
+dim(dfmTrainMatrix)
+dfmTestMatchedMatrix <- convert(dfmTestMatched, to = "matrix")
+dim(dfmTestMatchedMatrix)
+```
+
+```{r}
+# build RF model using 25 features per tree and 100 trees
+rf_model <- randomForest(dfmTrainMatrix,
+                         y = as.factor(docvars(dfmTrain)$review_freshness),
+                         xtest = dfmTestMatchedMatrix,
+                         ytest = as.factor(docvars(dfmTestMatched)$review_freshness),
+                         importance = TRUE, mtry = 25, ntree = 100)
+```
+
+```{r}
+# evaluate model on test data
+actual <- as.factor(docvars(dfmTestMatched)$review_freshness)
+predicted <- rf_model$test[['predicted']]
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+With an accuracy of 68%, the Random Forest model performed equally as well as the SVM model and just slightly worse than the Naive Bayes model.
+
+```{r}
+# compare feature importances
+varImpPlot(rf_model)
+```
+
+According to the variable importance plot, some of the most important features that we can assume to be negative are: "mess," "worst," "tedious," "dull," and "boring." Some of the most important features that we can assume to be positive are: "fun," "enjoyable," "best," "pleasure," and "entertaining."
+
+#### Initial Results
+
+In the first run-through, with the results printed above, the Naive Bayes model performed the best, with a classification accuracy of 70%. The Random Forest and Support Vector Machine models were close behind, with accuracies of 68% and 67%, respectively. I re-ran each of the three models two more times using different seeds to get different random training and testing sets. In the second run-through, the Naive Bayes model had an accuracy of 71%, the SVM model had an accuracy of 70%, and the Random Forest model had an accuracy of 70%. In the third run-through, the Naive Bayes model had an accuracy of 68%, the SVM model had an accuracy of 69%, and the Random Forest model had an accuracy of 69%. Clearly, the three models all perform almost equally as well as each other, regardless of the training subset used to build the models.
+
+Throughout my analysis, I have repeatedly come across the issue of the high weight that is given to words about specific vampire movies that are almost exclusively positively or negatively reviewed. For example, words that are associated with *A Girl Walks Home Alone at Night*, directed by Ana Lily Amirpour (including "Iranian" and "Amirpour"), *Only Lovers Left Alive*, directed by Jim Jarmusch (including "Jarmusch" and "Jarmusch's"), and *What We Do in the Shadows*, directed by Taika Waititi and Jemaine Clement (including "shadows" and "mockumentary"), are repeatedly featured in the positive word analyses. Likewise, words that are associated with the *Twilight*, *Underworld*, and *Blade* series are repeatedly featured in the negative word analyses. I considered removing references to specific movie titles, characters, or creative personnel from my corpora, but I ultimately decided against it. Removing these words may have led to a loss of information in reviews that refer to these other movies in a positive or negative comparative way or in reviews that use these words as common nouns.
+
+### New Data
+
+After exploring the data I retrieved from Kaggle, I was curious to see how well the models would perform on new data to determine whether the results I observed so far could be considered generalizable or not. To apply my models to reviews of newer vampire movies on Rotten Tomatoes that weren't included in the original dataset, I set about making my own dataset by finding reviews for 14 vampire movies which were released from 2020 to 2024.
+
+I tried scraping the reviews for each movie from Rotten Tomatoes using the rvest library, but when I attempted to do so, I encountered two errors. First, only the most recent 20 reviews that are visible before the "Load More" button were scraped for each movie. Second, and more importantly, the Freshness of each review wasn't extracted. This is likely because the words "Fresh" or "Rotten" aren't explicitly written for each review – only a graphic of a red tomato (for Fresh reviews) or a green splatter (for Rotten reviews) are shown.
+
+Instead of scraping the pages, I manually went to each movie's reviews page on Rotten Tomatoes, loaded all of the reviews, and copied and pasted the entire wall of text into the 'reviews' object I created in R. This method translated the Freshness of each review into the words "Fresh" or "Rotten."
+
+I extracted the name of the reviewer, the external publisher of the review, whether the review was Fresh or Rotten, the text of the review, and the date the review was published from each review using string processing functions. I created a dataframe with these 5 columns for each of the 14 newly-released movies, then I combined these dataframes into one CSV document. I also added in a column signaling whether the critic was considered a "Top Critic" on Rotten Tomatoes or not.
+
+```{r}
+#| eval: false
+# paste in review text from RT website for this movie
+# reviews <- {text}
+# split the text up into separate reviews
+reviews <- str_split(reviews, "\\n\\n\\n")
+# count the number of reviews
+review_num <- length(reviews[[1]])
+
+# store name of reviewer, name of publisher, freshness, review text, and date of review for all reviews for this movie
+names <- rep(NA, review_num)
+pubs <- rep(NA, review_num)
+fresh <- rep(NA, review_num)
+content <- rep(NA, review_num)
+dates <- rep(NA, review_num)
+
+# extract each piece of information from each review based on where the newline characters are
+for (i in 1:review_num){
+  n_locs <- str_locate_all(reviews[[1]][i], "\\n")
+  names[i] <- str_sub(reviews[[1]][i], start=1, end=n_locs[[1]][1]-1)
+  pubs[i] <- str_sub(reviews[[1]][i], start=n_locs[[1]][1]+1, end=n_locs[[1]][2]-1)
+  fresh[i] <- str_sub(reviews[[1]][i], start=n_locs[[1]][2]+1, end=n_locs[[1]][3]-8)
+  content[i] <- str_sub(reviews[[1]][i], start=n_locs[[1]][3]+1, end=n_locs[[1]][4]-1)
+  dates[i] <- str_sub(reviews[[1]][i], start=n_locs[[1]][4]+16)
+}
+
+# strip information about a reviewer's score for a movie out of the date
+dates <- str_remove_all(dates, "Original Score: ")
+dates <- str_remove_all(dates, "[:digit:]\\.[:digit:]/[:digit:]\\.[:digit:]")
+dates <- str_remove_all(dates, "[:digit:]\\.[:digit:]/[:digit:]{1,3}")
+dates <- str_remove_all(dates, "[:digit:]{1,3}/[:digit:]{1,3}")
+dates <- str_remove_all(dates, "[:alpha:]{1}[:punct:]{0,1} \\| ")
+dates <- str_remove_all(dates, " \\| ")
+
+# create and save the information for the movie's reviews in a dataframe
+df <- tibble(
+  name = names,
+  pub = pubs,
+  fresh = fresh,
+  date = dates,
+  content = content
+)
+write_csv(df, "this_new_vamp.csv")
+```
+
+```{r}
+# read in CSV file containing all new reviews
+new_data <- read.csv("C://Users/maura/Documents/DACSS/758/Final/new_vamp_reviews.csv")
+new_data <- new_data |> 
+  rename(movie_ID = rotten_tomatoes_link) |>
+  rename(review_freshness = review_type) |>
+  mutate(review_ID = seq(1:1740))
+head(new_data)
+```
+
+In the end, I generated a dataset with 1,740 new reviews to test the model on. There are 946 new Fresh reviews and 794 new Rotten reviews, which results in a 54% Fresh and 46% Rotten split – the classes are almost equally balanced.
+
+```{r}
+dim(new_data)
+sum(new_data$review_freshness=='Fresh')
+sum(new_data$review_freshness=='Rotten')
+```
+
+```{r}
+# split new data by freshness
+new_fresh_reviews <- filter(new_data, review_freshness == "Fresh")
+new_rotten_reviews <- filter(new_data, review_freshness == "Rotten")
+
+# combine all new fresh and new rotten reviews into one long review for each
+new_fresh_review_text <- paste(new_fresh_reviews$review_content, collapse=" ")
+new_rotten_review_text <- paste(new_rotten_reviews$review_content, collapse=" ")
+
+# make corpus with 2 documents, tokenize, and make dfm
+new_fr_df <- tibble(freshness = c("Fresh", "Rotten"),
+                    review_text = c(new_fresh_review_text, new_rotten_review_text))
+new_fr_corpus <- corpus(new_fr_df, docid_field = "freshness", 
+                        text_field = "review_text")
+new_fr_tokens <- tokens(new_fr_corpus, remove_punct = T, remove_numbers = T) |>
+  tokens_select(pattern="vampire", select = "remove")
+new_fr_dfm <- dfm(new_fr_tokens) |> dfm_remove(stopwords('english')) |>
+  dfm_trim(min_termfreq = 50, verbose = FALSE)
+
+# make comparison word cloud
+set.seed(15)
+textplot_wordcloud(new_fr_dfm, comparison = TRUE, color = c("darkgreen", "red"))
+```
+
+The comparison word cloud built using the new reviews reveals some similar trends to the comparison word cloud built using the older reviews. Here, some of the standard positive words found in Fresh reviews are "fun," "entertaining," "great," "good," and "funny." There aren't many standard negative words found in Rotten reviews, though. Some vampire-specific positive words in the Fresh reviews are "horror," "blood," "bloody," and "gore." Given that there are only 14 different films that were reviewed in the new dataset, it's not surprising to see that some specific titles dominate the word cloud, such as the well-received "Abigail" and the negatively-received "Morbius."
+
+### Supervised Learning with New Data
+
+Next, in order to evaluate the performance of the supervised learning techniques on the new data, I built a training document-feature matrix consisting of all the old data and a testing document-feature matrix consisting of all the new data.
+
+```{r}
+# create corpus of new reviews
+new_corpus <- corpus(new_data, docid_field = "review_ID",
+                     text_field = "review_content")
+docvars(new_corpus, "review_ID") <- new_data$review_ID
+ndoc(new_corpus)
+```
+
+```{r}
+# create dfms without stopwords or punctuation
+dfmTrain <- vamp_corpus |> tokens(remove_punct=T) |> 
+  tokens_select(c("vampire", "vampires"), selection="remove") |>
+  dfm() |> dfm_remove(stopwords('english')) |> dfm_trim(min_docfreq = 10)
+dim(dfmTrain) 
+dfmTest <- new_corpus |> tokens(remove_punct=T) |> 
+  tokens_select(c("vampire", "vampires"), selection="remove") |>
+  dfm() |> dfm_remove(stopwords('english'))
+dim(dfmTest) 
+```
+
+#### Naive Bayes Model
+
+```{r}
+# run and evaluate performance of NB model
+nb_model <- textmodel_nb(dfmTrain, docvars(dfmTrain, "review_freshness"),
+                         distribution = "Bernoulli")
+dfmTestMatched <- dfm_match(dfmTest, features = featnames(dfmTrain))
+
+actual <- docvars(dfmTestMatched, "review_freshness")
+predicted <- predict(nb_model, newdata = dfmTestMatched)
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+The Naive Bayes model had an accuracy of 71%. The precision for Fresh reviews is 76%, and the recall for Fresh reviews is 70%. The precision for Rotten reviews is 67%, and the recall for Rotten reviews is 73%.
+
+#### Support Vector Machine
+
+```{r}
+# run and evaluate performance of SVM model
+svm_model <- textmodel_svm(dfmTrain, docvars(dfmTrain, "review_freshness"))
+dfmTestMatched <- dfm_match(dfmTest, features = featnames(dfmTrain))
+
+actual <- docvars(dfmTestMatched, "review_freshness")
+predicted <- predict(svm_model, newdata = dfmTestMatched)
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+The Support Vector Machine model had an accuracy of 69%. The precision for Fresh reviews is 73%, and the recall for Fresh reviews is 69%. The precision for Rotten reviews is 65%, and the recall for Rotten reviews is 69%.
+
+#### Random Forest
+
+```{r}
+# run and evaluate performance of RF model
+dfmTrainMatrix <- convert(dfmTrain, to = "matrix")
+dfmTestMatchedMatrix <- convert(dfmTestMatched, to = "matrix")
+rf_model <- randomForest(dfmTrainMatrix,
+                         y = as.factor(docvars(dfmTrain)$review_freshness),
+                         xtest = dfmTestMatchedMatrix,
+                         ytest = as.factor(docvars(dfmTestMatched)$review_freshness),
+                         importance = TRUE, mtry = 25, ntree = 100)
+
+actual <- as.factor(docvars(dfmTestMatched)$review_freshness)
+predicted <- rf_model$test[['predicted']]
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+The Random Forest model had an accuracy of 69%. The precision for Fresh reviews is 69%, and the recall for Fresh reviews is 78%. The precision for Rotten reviews is 69%, and the recall for Rotten reviews is 59%.
+
+#### Ensemble Model
+
+Since the Naive Bayes, Random Forest, and SVM models all performed relatively equally, I wanted to develop an ensemble model, with equal weight given to the results of the three individual models, to see if the predictions would improve.
+
+```{r}
+# sum Fresh predictions for each test review based on trained models
+n_predict_fresh <- (predict(nb_model, newdata = dfmTestMatched) == "Fresh") +
+    (predict(svm_model, newdata = dfmTestMatched) == "Fresh") +
+    (rf_model$test[['predicted']] == "Fresh") 
+
+# start all test predictions as Rotten, change to Fresh if more than 1 of the 3 models predicted a test review to be Fresh
+predicted <- rep("Rotten", length(actual))
+predicted[n_predict_fresh > 1] <- "Fresh"
+
+# create confusion matrix
+confusion <- table(predicted, actual)
+confusionMatrix(confusion)
+```
+
+The ensemble model had an accuracy of 72%. The precision for Fresh reviews is 75%, and the recall for Fresh reviews is 73%. The precision for Rotten reviews is 69%, and the recall for Rotten reviews is 70%.
+
+### Conclusion
+
+The supervised learning models built using old reviews to predict the sentiment of new reviews were able to do just as well as they had when they were built using a random subset of old reviews to predict the held-out subset of old reviews. This suggests that, even though the specific vampire films and cast and crew involved in making these films changes over time, the words that critics have used to describe such films that they liked or didn't like haven't changed all that much.
+
+The ensemble model had the best predictions of sentiment for the new reviews, with an accuracy of 72%. The other models performed similarly, though, with the Naive Bayes model having an accuracy of 71% and the Support Vector Machine and Random Forest models having accuracies of 69%. All of the models had higher precision for Fresh reviews than they did for Rotten reviews. The Naive Bayes and SVM models had lower recalls for Fresh reviews than Rotten reviews, but the Random Forest and ensemble models had higher recalls for Fresh reviews than Rotten reviews. This implies that the models generally performed better at detecting when reviews were Fresh than at detecting when they were Rotten.
+
+The Naive Bayes model and SVM models required the least amount of computational power and time to build. The Random Forest model didn't perform quite well enough on its own to justify the high amount of resources that it demands, but it was necessary to build the ensemble model, which performed the best out of all four models.
+
+Overall, I saw evidence to support both of my initial hypotheses. Fresh reviews of vampire movies frequently included words such as "good," "great," "best," "fun," "original," and "entertaining." Rotten reviews of vampire movies frequently included words such as "bad," "poor," "boring," "worst," "nothing," and "mess." These results align with what I expected to see from my first hypothesis. Additionally, the words "horror" and "blood" were repeatedly associated more with Fresh reviews than Rotten reviews, which aligns with my second hypothesis. There was more evidence to support the first hypothesis than there was to support the second, though, given how much more frequently the general positive or negative words showed up in comparison to the vampire-specific words.
+
+There are several additional ways in which I could further explore this data in the future. First, I could find a way to incorporate the other covariates from the datasets into my predictive models. I had information about the critic who wrote the review, the publication they wrote the review for, and the date of the review, which could all influence the reviews they write. For example, some critics may generally be harsher and less likely to give Fresh reviews than others. Or, occasionally, some films that get badly reviewed right when they're released are re-evaluated years later and reviewed more favorably after some time has passed. Refraining from including any of these covariates in my analyses has made the results more generally applicable to reviews written by any critic, for any publication, at any time, but these factors could have improved upon the predictions made for this data alone.
+
+Second, I could conduct more complex analyses of the data, by pre-processing it differently or using different models. My models were built entirely on unigrams, whereas I could have chosen to use bi-grams or tri-grams, too. The use of features consisting of more than just individual words could have improved the models' predictive performance on Rotten reviews, in particular. Phrases like "not good," "wasn't better than," or other negative phrases that contain positive words embedded in them could be analyzed more accurately when using more than unigrams alone. More sophisticated neural network models could have incorporated these more complex forms of analysis. Although these models require more computational power, the trade-off of resources for accuracy could make trying them worthwhile.
+
+For fairly easy-to-implement models that were built off of 8,200 reviews consisting of at most 250 characters each, they all achieved satisfactory levels of prediction accuracy. I would be interested to see how these models would perform on Rotten Tomatoes reviews of non-vampire movies, because the way in which critics evaluate movies didn't seem to depend as much on the movies' genre or subject matter as I originally thought they might. These models might do better at predicting the sentiment of horror movie reviews than they do at predicting the sentiment of all movie reviews, but one can assume that they would perform best on the specific type of reviews that they cut their teeth on.
+
+### References
+
+Agarwal, H., Verma, A., Gera P., & Mohapatra, A. K. (2023). Comparative analysis of models for movie review sentiment analysis. In *2023 6th International Conference on Contemporary Computing and Informatics (IC3I)* (pp. 901-905). IEEE. <https://doi.org/10.1109/IC3I59117.2023.10398105>
+
+Başa, S. N., & Basarslan, M. S. (2023). Sentiment analysis using machine learning techniques on IMDB dataset. In *2023 7th International Symposium on Multidisciplinary Studies and Innovative Technologies (ISMSIT)* (pp. 1-5). IEEE. <https://doi.org/10.1109/ISMSIT58785.2023.10304923>
+
+Beniwal, R., Dinkar, A. K., Kumar, A., & Panchal, A. (2024). A hybrid deep learning model for sentiment analysis of IMDB movies reviews. In *2024 Asia Pacific Conference on Innovation in Technology (APCIT) (*pp. 1-7). IEEE. <https://doi.org/10.1109/APCIT62007.2024.10673659>
+
+Danyal, M. M., Khan, S. S., Khan, M., Ullah, S., Ghaffar, M. B., & Khan, W. (2024). Sentiment analysis of movie reviews based on NB approaches using TF–IDF and count vectorizer. *Social Network Analysis and Mining, 14*(87), 1-15. <https://doi.org/10.1007/s13278-024-01250-9>
+
+G, B. M., R, P. K., Kakarla, Y., Manikumar, V. S. S. S. R., Harshita, S., Adhitya, C. M. J., Naidu, P. G., & Bashpika, T. (2024). A comparative study of movie review segregation using sentiment analysis. In *2024 Second International Conference on Emerging Trends in Information Technology and Engineering (ICETITE)* (pp. 1-6). IEEE. <https://doi.org/10.1109/ic-ETITE58242.2024.10493710>
+
+Pang, B., Lee, L., & Vaithyanathan, S. (2002). Thumbs up? Sentiment classification using machine learning techniques. In *Proceedings of the 2002 Conference on Empirical Methods in Natural Language Processing (EMNLP 2002)* (pp. 79–86). Association for Computational Linguistics. <https://doi.org/10.3115/1118693.1118704>
+
+Purohit, S., Rajput, A., Vats, S., Mudgal, R., Shah, O. A., & Verma, A. (2024). Comparative analysis of LSTM and random forest algorithms for sentiment classification in movie reviews. In *2024 3rd International Conference on Applied Artificial Intelligence and Computing (ICAAIC)* (pp. 1053-1057). IEEE. <https://doi.org/10.1109/ICAAIC60222.2024.10575246>
+
+Weinstock, J. (2012). Introduction: Vampire cinema. In *The Vampire Film: Undead Cinema* (pp. 1-19). Columbia University Press. <https://ebookcentral.proquest.com/lib/uma/reader.action?docID=909597&ppg=8>
