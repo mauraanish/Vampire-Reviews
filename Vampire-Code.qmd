@@ -182,7 +182,7 @@ rotten_tokens <- tokens(rotten_corpus, remove_punct = T, remove_numbers = T) |>
 ```
 
 ```{r}
-# keep words surrounding "vampire" or "vampires" in reviews
+# keep words surrounding "vampire" in reviews
 fresh_near_vamp <- tokens_select(fresh_tokens, pattern = "vampire",
                                  window = 5, selection = "keep")
 rotten_near_vamp <- tokens_select(rotten_tokens, pattern = "vampire",
